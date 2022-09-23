@@ -24,18 +24,20 @@ type lsmDB struct {
 
 	memtableMaxBytes int               // max bytes before flushing memtable
 	flushQueue       []flushQueueEntry // queue of memtables to flush
-	memLock          sync.RWMutex      // memtable lock
+	flushLock        sync.RWMutex      // flush queue lock
+	writeLock        sync.Mutex        // write lock
 
 	ioProvider IOProvider // configurable io provider
 }
 
-const defaultMemtableMaxBytes = 4096
+const defaultMemtableMaxBytes = 1 << 20 // 1 MiB
 
 func LSMDB(ioProvider IOProvider, memtableMaxBytes int) (*lsmDB, error) {
 	db := lsmDB{
 		walID:            0,
 		flushQueue:       nil,
-		memLock:          sync.RWMutex{},
+		writeLock:        sync.Mutex{},
+		flushLock:        sync.RWMutex{},
 		ioProvider:       ioProvider,
 		memtableMaxBytes: memtableMaxBytes,
 	}
@@ -84,8 +86,8 @@ func (db *lsmDB) Put(key string, value string) error {
 	}
 
 	if db.memtable.computeNewSize(key, value) > db.memtableMaxBytes {
-		// lock all access before flushing
-		db.memLock.Lock()
+		// lock all flush queue
+		db.flushLock.Lock()
 
 		// memtable is full, swap it out
 		db.flushQueue = append(db.flushQueue, flushQueueEntry{
@@ -95,17 +97,17 @@ func (db *lsmDB) Put(key string, value string) error {
 		db.walID = db.walID + 1
 		err := db.newMemtableAndWal()
 
-		// release write lock
-		db.memLock.Unlock()
+		// release flush queue lock
+		db.flushLock.Unlock()
 
 		if err != nil {
 			return err
 		}
 	}
 
-	// acquire memtable read lock before writing data
-	db.memLock.RLock()
-	defer db.memLock.RUnlock()
+	// acquire write lock to serialize puts and deletes
+	db.writeLock.Lock()
+	defer db.writeLock.Unlock()
 
 	db.wal.write(key, value)
 	db.memtable.put(key, value)
@@ -120,9 +122,9 @@ func (db *lsmDB) Get(key string) (string, bool, error) {
 		return "", false, errors.New("key required")
 	}
 
-	// acquire memtable read lock before reading data
-	db.memLock.RLock()
-	defer db.memLock.RUnlock()
+	// acquire flush read lock before reading data
+	db.flushLock.RLock()
+	defer db.flushLock.RUnlock()
 
 	// check active memtable
 	if value, ok := db.memtable.get(key); ok {
@@ -146,9 +148,9 @@ func (db *lsmDB) Delete(key string) error {
 		return errors.New("key required")
 	}
 
-	// acquire memtable read lock before deleting data
-	db.memLock.RLock()
-	defer db.memLock.RUnlock()
+	// acquire wirte lock to serialize puts and deletes
+	db.writeLock.Lock()
+	defer db.writeLock.Unlock()
 
 	db.wal.delete(key)
 	db.memtable.delete(key)
