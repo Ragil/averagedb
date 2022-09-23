@@ -14,12 +14,6 @@ type writeAheadLogDecoder struct {
 	gob.Decoder
 }
 
-type logEntry struct {
-	Key     string
-	Value   string
-	Deleted bool
-}
-
 func newWriteAheadLog(stream io.ReadWriter) *writeAheadLog {
 	return &writeAheadLog{
 		stream:  stream,
@@ -28,7 +22,7 @@ func newWriteAheadLog(stream io.ReadWriter) *writeAheadLog {
 }
 
 // write a single entry atomically to the log
-func (log *writeAheadLog) write(entry *logEntry) error {
+func (log *writeAheadLog) write(entry *writeOperation) error {
 	return log.encoder.Encode(entry)
 }
 
@@ -39,8 +33,8 @@ func (log *writeAheadLog) decoder() *writeAheadLogDecoder {
 }
 
 // read one log entry from the log
-func (decoder *writeAheadLogDecoder) read() (*logEntry, error) {
-	var entry logEntry
+func (decoder *writeAheadLogDecoder) read() (*writeOperation, error) {
+	var entry writeOperation
 	err := decoder.Decode(&entry)
 	return &entry, err
 }

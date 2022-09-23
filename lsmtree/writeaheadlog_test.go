@@ -8,7 +8,7 @@ import (
 func TestWriteSingleLog(t *testing.T) {
 	var stream bytes.Buffer
 	wal := newWriteAheadLog(&stream)
-	err := wal.write(&logEntry{"hi", "value", false})
+	err := wal.write(&writeOperation{Key: "hi", Value: "value"})
 
 	if err != nil {
 		t.Fatalf(`unexpected error {%v}`, err)
@@ -34,7 +34,7 @@ func TestWriteReadSingleLog(t *testing.T) {
 	wal := newWriteAheadLog(&stream)
 	decoder := wal.decoder()
 
-	wal.write(&logEntry{"hi", "value", false})
+	wal.write(&writeOperation{Key: "hi", Value: "value"})
 	entry, err := decoder.read()
 
 	if err != nil {
@@ -50,9 +50,9 @@ func TestWriteReadMultipleLogs(t *testing.T) {
 	wal := newWriteAheadLog(&stream)
 	decoder := wal.decoder()
 
-	wal.write(&logEntry{"hi", "value", false})
+	wal.write(&writeOperation{Key: "hi", Value: "value"})
 	decoder.read()
-	wal.write(&logEntry{"hi2", "value2", false})
+	wal.write(&writeOperation{Key: "hi2", Value: "value2"})
 	entry, err := decoder.read()
 
 	if err != nil {

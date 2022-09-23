@@ -4,12 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sync"
+	"time"
 )
 
 type IOProvider interface {
-	Stream(id string) (io.ReadWriter, error)
+	Stream(namespace string, id string) (io.ReadWriter, error)
+	ListStreamIDs(namespace string) ([]string, error)
 }
 
 type flushQueueEntry struct {
@@ -23,7 +24,7 @@ type lsmDB struct {
 	walID    int            // current wal ID
 
 	memtableMaxBytes int               // max bytes before flushing memtable
-	flushQueue       []flushQueueEntry // queue of memtables to flush
+	flushQueue       []flushQueueEntry // ordered queue of memtables to flush (oldest first)
 	flushLock        sync.RWMutex      // flush queue lock
 	writeLock        sync.Mutex        // write lock
 
@@ -56,7 +57,7 @@ func LSMDB(ioProvider IOProvider, memtableMaxBytes int) (*lsmDB, error) {
 // In place update new memtable and WAL.
 // Nothing is updated if a new WAL cannot be created.
 func (db *lsmDB) newMemtableAndWal() error {
-	stream, err := db.ioProvider.Stream(filepath.Join("wal", fmt.Sprint(db.walID)))
+	stream, err := db.ioProvider.Stream("wal", fmt.Sprint(db.walID))
 	if err != nil {
 		return err
 	}
@@ -77,15 +78,75 @@ func (db *lsmDB) Put(key string, value string) error {
 		return errors.New("value required")
 	}
 
-	if len(key)+len(value) > db.memtableMaxBytes {
+	operation := &writeOperation{
+		Key:       key,
+		Value:     value,
+		Delete:    false,
+		Timestamp: time.Now().UnixNano(),
+	}
+	return db.put(operation)
+}
+
+// Return value associated to key.
+// Return not ok if key not in db.
+// Throws error on failure to read from storage.
+func (db *lsmDB) Get(key string) (string, bool, error) {
+	if key == "" {
+		return "", false, errors.New("key required")
+	}
+
+	// acquire flush read lock before reading data
+	db.flushLock.RLock()
+	defer db.flushLock.RUnlock()
+
+	// check active memtable
+	if operation, ok := db.memtable.get(key); ok {
+		if operation.Delete {
+			return "", false, nil
+		}
+		return operation.Value, true, nil
+	}
+
+	// check flush queue from newest to oldest
+	for i := len(db.flushQueue) - 1; i >= 0; i-- {
+		if operation, ok := db.flushQueue[i].memtable.get(key); ok {
+			if operation.Delete {
+				return "", false, nil
+			}
+			return operation.Value, true, nil
+		}
+	}
+
+	return "", false, nil
+}
+
+// Delete data from db.
+// Data is only tombstoned and will be deleted on next compaction.
+func (db *lsmDB) Delete(key string) error {
+	if key == "" {
+		return errors.New("key required")
+	}
+
+	operation := &writeOperation{
+		Key:       key,
+		Value:     "",
+		Delete:    true,
+		Timestamp: time.Now().UnixNano(),
+	}
+	return db.put(operation)
+}
+
+// common put for write operations
+func (db *lsmDB) put(operation *writeOperation) error {
+	if operation.size() > db.memtableMaxBytes {
 		return errors.New(fmt.Sprintf(
 			`data too large. data is {%v} bytes. Max size is {%v} bytes`,
-			len(key)+len(value),
+			operation.size(),
 			db.memtableMaxBytes,
 		))
 	}
 
-	if db.memtable.computeNewSize(key, value) > db.memtableMaxBytes {
+	if db.memtable.computeNewSize(operation) > db.memtableMaxBytes {
 		// lock all flush queue
 		db.flushLock.Lock()
 
@@ -109,50 +170,7 @@ func (db *lsmDB) Put(key string, value string) error {
 	db.writeLock.Lock()
 	defer db.writeLock.Unlock()
 
-	db.wal.write(&logEntry{key, value, false})
-	db.memtable.put(key, value)
-	return nil
-}
-
-// Return value associated to key.
-// Return not ok if key not in db.
-// Throws error on failure to read from storage.
-func (db *lsmDB) Get(key string) (string, bool, error) {
-	if key == "" {
-		return "", false, errors.New("key required")
-	}
-
-	// acquire flush read lock before reading data
-	db.flushLock.RLock()
-	defer db.flushLock.RUnlock()
-
-	// check active memtable
-	if value, ok := db.memtable.get(key); ok {
-		return value, true, nil
-	}
-
-	// check flush queue
-	for _, flushQueueEntry := range db.flushQueue {
-		if value, ok := flushQueueEntry.memtable.get(key); ok {
-			return value, true, nil
-		}
-	}
-
-	return "", false, nil
-}
-
-// Delete data from db.
-// Data is only tombstoned and will be deleted on next compaction.
-func (db *lsmDB) Delete(key string) error {
-	if key == "" {
-		return errors.New("key required")
-	}
-
-	// acquire wirte lock to serialize puts and deletes
-	db.writeLock.Lock()
-	defer db.writeLock.Unlock()
-
-	db.wal.write(&logEntry{key, "", false})
-	db.memtable.delete(key)
+	db.wal.write(operation)
+	db.memtable.put(operation)
 	return nil
 }
