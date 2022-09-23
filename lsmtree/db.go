@@ -109,7 +109,7 @@ func (db *lsmDB) Put(key string, value string) error {
 	db.writeLock.Lock()
 	defer db.writeLock.Unlock()
 
-	db.wal.write(key, value)
+	db.wal.write(&logEntry{key, value, false})
 	db.memtable.put(key, value)
 	return nil
 }
@@ -152,7 +152,7 @@ func (db *lsmDB) Delete(key string) error {
 	db.writeLock.Lock()
 	defer db.writeLock.Unlock()
 
-	db.wal.delete(key)
+	db.wal.write(&logEntry{key, "", false})
 	db.memtable.delete(key)
 	return nil
 }
