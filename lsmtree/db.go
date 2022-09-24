@@ -31,7 +31,7 @@ type lsmDB struct {
 	ioProvider IOProvider // configurable io provider
 }
 
-const defaultMemtableMaxBytes = 1 << 20 // 1 MiB
+const DefaultMemtableMaxBytes = 1 << 20 // 1 MiB
 
 func LSMDB(ioProvider IOProvider, memtableMaxBytes int) (*lsmDB, error) {
 	db := lsmDB{
@@ -43,7 +43,7 @@ func LSMDB(ioProvider IOProvider, memtableMaxBytes int) (*lsmDB, error) {
 		memtableMaxBytes: memtableMaxBytes,
 	}
 	if memtableMaxBytes == 0 {
-		db.memtableMaxBytes = defaultMemtableMaxBytes
+		db.memtableMaxBytes = DefaultMemtableMaxBytes
 	}
 
 	err := db.newMemtableAndWal()
@@ -73,9 +73,6 @@ func (db *lsmDB) newMemtableAndWal() error {
 func (db *lsmDB) Put(key string, value string) error {
 	if key == "" {
 		return errors.New("key required")
-	}
-	if value == "" {
-		return errors.New("value required")
 	}
 
 	operation := &writeOperation{
